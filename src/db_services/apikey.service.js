@@ -26,10 +26,11 @@ const saveApikeyRecord = async (data) => {
   };
 };
 
-// The Claude login of an org, or of one embed folder: the newest `claude_code` credential in that scope.
-const findClaudeLogin = async (org_id, folder_id) => {
+// The own login (claude_code: Claude, codex: ChatGPT) of an org, or of one embed folder: the newest
+// credential of that service in that scope.
+const findOrgLogin = async (org_id, folder_id, service) => {
   const scope = folder_id ? { folder_id } : { folder_id: { $in: ["", null] } };
-  return ApikeyCredential.findOne({ org_id, service: "claude_code", ...scope })
+  return ApikeyCredential.findOne({ org_id, service, ...scope })
     .sort({ _id: -1 })
     .lean();
 };
@@ -345,7 +346,7 @@ async function findApikeyByAgentId(agent_id, org_id) {
 export default {
   saveApikeyRecord,
   findApikeyByName,
-  findClaudeLogin,
+  findOrgLogin,
   findAllApikeys,
   updateApikeyRecord,
   removeApikeyById,

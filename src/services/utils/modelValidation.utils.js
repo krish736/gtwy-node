@@ -14,6 +14,8 @@ const API_KEY_ENV_MAP = {
   anthropic: "ANTHROPIC_API_KEY",
   // claude_code serves the same models; the provider's model list is read with the Anthropic key
   claude_code: "ANTHROPIC_API_KEY",
+  // codex serves openai models; the provider's model list is read with the OpenAI key
+  codex: "OPENAI_API_KEY",
   groq: "GROQ_API_KEY",
   mistral: "MISTRAL_API_KEY",
   deepgram: "DEEPGRAM_API_KEY",
