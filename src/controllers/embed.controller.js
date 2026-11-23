@@ -308,6 +308,7 @@ const getEmbedDataByUserId = async (req, res, next) => {
       filter: parsedFilter && typeof parsedFilter === "object" ? parsedFilter : {},
       // Already split, checked and normalized by the Joi schema (e.g. ["_id", "name", "meta"])
       fields: Array.isArray(fields) ? fields : [],
+      // "any" (or no status) means no status filter: live and draft agents are both returned
       status: status === "live" || status === "draft" ? status : "",
       // Already split, checked and de-duplicated by the Joi schema
       agent_ids: Array.isArray(agent_ids) ? agent_ids : []

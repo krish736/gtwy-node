@@ -805,7 +805,8 @@ const getAgentsByUserId = async (orgId, userId, agent_id, folder_id, options = {
     if (folder_id) {
       query.folder_id = folder_id;
     }
-    // live = has a published version; draft = never published (field missing, null or empty)
+    // live = has a published version; draft = never published (field missing, null or empty);
+    // anything else ("any" or empty) = no status filter, both are returned
     if (status === "live") {
       query.published_version_id = { $nin: [null, ""] };
     } else if (status === "draft") {

@@ -109,8 +109,9 @@ const getEmbedDataByUserId = {
           "string.pattern.base": "agent_id must be a valid MongoDB ObjectId"
         }),
       agent_ids: Joi.alternatives().try(Joi.string(), Joi.array().items(Joi.string())).optional().custom(normalizeAgentIds),
-      status: Joi.string().trim().lowercase().valid("live", "draft").optional().messages({
-        "any.only": "status must be one of live, draft"
+      // live = published, draft = never published, any = both (same as leaving status out)
+      status: Joi.string().trim().lowercase().valid("live", "draft", "any").optional().messages({
+        "any.only": "status must be one of live, draft, any"
       }),
       fields: Joi.alternatives().try(Joi.string(), Joi.array().items(Joi.string())).optional().custom(normalizeEmbedAgentFields)
     })
