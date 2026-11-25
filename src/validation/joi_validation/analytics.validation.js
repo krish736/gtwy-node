@@ -76,9 +76,8 @@ const getAgentUsage = {
         .pattern(new RegExp(`^${usageKey}(?:,${usageKey})?$`))
         .required()
         .messages({ "string.pattern.base": "group_by takes one or two of: variables.<key>, model, day" }),
-      range: Joi.alternatives()
-        .try(Joi.number().integer().min(1).max(365), Joi.string().pattern(/^[0-9]+[hd]$/))
-        .optional(),
+      // Capped at 30 days: the query aggregates every message of the agent in the window.
+      range: Joi.string().valid("24h", "7d", "30d").optional().default("7d"),
       // Exact matches on a variable's value. variables_ne keeps rows that do not have the variable.
       variables_eq: variableMatch.optional(),
       variables_ne: variableMatch.optional(),

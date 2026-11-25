@@ -147,11 +147,12 @@ async function getCostOverTime({ bridge_id, org_id, start, end, bucket, filters 
 
 const USAGE_COLUMNS = { model: "model", day: "to_char(date_trunc('day', created_at), 'YYYY-MM-DD')" };
 
-// getSummary's numbers for one agent and window: one row per group when `group_by` is given
-// (variables.<name>, model or day), otherwise one row of totals.
+// getSummary's numbers for one agent and window, one row per group (variables.<name>, model or day),
+// plus the totals over all groups. One pass over the table: the totals are summed from the groups,
+// not from a second scan. A group whose key is null holds the messages that have no value for it.
 // variables_eq / variables_ne compare a variable's value exactly; "not equal" keeps rows without it.
 // Names and values travel as bind params; the validator limits group_by and sort to known words.
-async function getUsageRows({ bridge_id, org_id, start, end, filters, group_by = [], variables_eq = {}, variables_ne = {}, sort, limit }) {
+async function getUsage({ bridge_id, org_id, start, end, filters, group_by, variables_eq = {}, variables_ne = {}, sort, limit }) {
   const params = { bridge_id, org_id, start, end, limit };
   const groups = group_by.map((key, i) => {
     if (USAGE_COLUMNS[key]) return USAGE_COLUMNS[key];
@@ -168,38 +169,46 @@ async function getUsageRows({ bridge_id, org_id, start, end, filters, group_by =
     where.push(`AND COALESCE(variables->>:nk${i}, '') <> :nv${i}`);
   });
   const order = sort === "day" ? `g${group_by.indexOf("day")}` : sort;
+  // updated_at is never before created_at, so the extra bound changes no result; it lets the
+  // (org_id, bridge_id, updated_at) index narrow the scan to the window instead of the whole agent.
   const query = `
-    SELECT ${groups.map((expr, i) => `${expr} AS g${i},`).join(" ")}
-      COUNT(*)::int AS total_requests,
-      COUNT(*) FILTER (WHERE status = false)::int AS failed_runs,
-      COALESCE(SUM(
-        COALESCE((tokens->>'total_tokens')::float,
-                 COALESCE((tokens->>'input_tokens')::float, 0) + COALESCE((tokens->>'output_tokens')::float, 0))
-      ), 0) AS total_tokens,
-      COALESCE(SUM((tokens->>'expected_cost')::float), 0) AS est_cost,
-      COALESCE(SUM((tokens->>'credits')::float), 0) AS credits
-    FROM conversation_logs
-    WHERE bridge_id = :bridge_id AND org_id = :org_id
-      AND created_at BETWEEN :start AND :end ${filterClause(filters)} ${where.join(" ")}
-    ${groups.length ? `GROUP BY ${groups.map((_, i) => i + 1).join(", ")} ORDER BY ${order} DESC LIMIT :limit` : ""}`;
-  return pgSelect(query, params);
-}
+    WITH g AS (
+      SELECT ${groups.map((expr, i) => `${expr} AS g${i}`).join(", ")},
+        COUNT(*)::int AS total_requests,
+        COUNT(*) FILTER (WHERE status = false)::int AS failed_runs,
+        COALESCE(SUM(
+          COALESCE((tokens->>'total_tokens')::float,
+                   COALESCE((tokens->>'input_tokens')::float, 0) + COALESCE((tokens->>'output_tokens')::float, 0))
+        ), 0) AS total_tokens,
+        COALESCE(SUM((tokens->>'expected_cost')::float), 0) AS est_cost,
+        COALESCE(SUM((tokens->>'credits')::float), 0) AS credits
+      FROM conversation_logs
+      WHERE org_id = :org_id AND bridge_id = :bridge_id
+        AND updated_at >= :start
+        AND created_at BETWEEN :start AND :end ${filterClause(filters)} ${where.join(" ")}
+      GROUP BY ${groups.map((_, i) => i + 1).join(", ")}
+    )
+    SELECT g.*, COUNT(*) OVER ()::int AS all_groups,
+      SUM(total_requests) OVER ()::int AS all_requests, SUM(failed_runs) OVER ()::int AS all_failed,
+      SUM(total_tokens) OVER () AS all_tokens, SUM(est_cost) OVER () AS all_cost, SUM(credits) OVER () AS all_credits
+    FROM g ORDER BY ${order} DESC LIMIT :limit`;
+  const rows = await pgSelect(query, params);
 
-// Totals for the window plus one row per group. A group whose key is null holds the messages that
-// have no value for it, so the groups add up to the summary whenever `truncated` is false.
-async function getUsage(args) {
-  const [[totals], rows] = await Promise.all([getUsageRows({ ...args, group_by: [] }), getUsageRows(args)]);
-  const numbers = (row = {}) => ({
-    total_requests: row.total_requests || 0,
-    failed_runs: row.failed_runs || 0,
-    total_tokens: Math.round(row.total_tokens || 0),
-    est_cost: Number(Number(row.est_cost || 0).toFixed(6)),
-    credits: Number(Number(row.credits || 0).toFixed(4))
+  const numbers = (requests, failed, tokens, cost, credits) => ({
+    total_requests: requests || 0,
+    failed_runs: failed || 0,
+    total_tokens: Math.round(tokens || 0),
+    est_cost: Number(Number(cost || 0).toFixed(6)),
+    credits: Number(Number(credits || 0).toFixed(4))
   });
+  const all = rows[0] || {};
   return {
-    summary: numbers(totals),
-    groups: rows.map((row) => ({ ...Object.fromEntries(args.group_by.map((key, i) => [key, row[`g${i}`] ?? null])), ...numbers(row) })),
-    truncated: rows.length >= args.limit
+    summary: numbers(all.all_requests, all.all_failed, all.all_tokens, all.all_cost, all.all_credits),
+    groups: rows.map((row) => ({
+      ...Object.fromEntries(group_by.map((key, i) => [key, row[`g${i}`] ?? null])),
+      ...numbers(row.total_requests, row.failed_runs, row.total_tokens, row.est_cost, row.credits)
+    })),
+    truncated: (all.all_groups || 0) > rows.length
   };
 }
 
