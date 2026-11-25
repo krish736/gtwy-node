@@ -159,6 +159,41 @@ const getAgentAnalyticsFilters = async (req, res, next) => {
   }
 };
 
+// GET /api/analytics/agent/:bridge_id/usage?group_by=variables.orgId
+// Usage of the agent grouped by a variable, model or day, with the totals for the window.
+// Answered in the response itself (nothing goes over the RT layer).
+const getAgentUsage = async (req, res, next) => {
+  // Cost is not shown to embed users (they never receive the tokens field either).
+  if (req.IsEmbedUser) {
+    res.locals = { success: false, message: "Access denied: embed users are not allowed to access this resource" };
+    req.statusCode = 403;
+    return next();
+  }
+  const { bridge_id } = req.params;
+  const { range, variables_eq, variables_ne, limit, filter_by } = req.query;
+  const group_by = req.query.group_by.split(",");
+  const window = analyticsService.computeWindow({ range });
+  const byDay = group_by.includes("day");
+
+  const usage = await analyticsService.getUsage({
+    bridge_id,
+    org_id: String(req.profile?.org?.id),
+    start: window.start,
+    end: window.end,
+    filters: { filter_by },
+    group_by,
+    variables_eq,
+    variables_ne,
+    // Newest day first when grouped by day, otherwise highest cost first; "day" needs a day key.
+    sort: req.query.sort && (byDay || req.query.sort !== "day") ? req.query.sort : byDay ? "day" : "est_cost",
+    limit
+  });
+
+  res.locals = { success: true, bridge_id, range_start: window.start, range_end: window.end, group_by, ...usage };
+  req.statusCode = 200;
+  return next();
+};
+
 /** Normalize one proxy user row into our map entry. */
 function toUserEntry(user) {
   if (user?.id == null) return null;
@@ -356,5 +391,6 @@ const getEmbedAnalytics = async (req, res, next) => {
 export default {
   getAgentAnalytics,
   getAgentAnalyticsFilters,
+  getAgentUsage,
   getEmbedAnalytics
 };

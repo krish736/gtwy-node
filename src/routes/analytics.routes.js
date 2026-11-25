@@ -17,6 +17,9 @@ router.get(
   analyticsController.getAgentAnalyticsFilters
 );
 
+// Agent usage grouped by a variable / model / day, in the response (no RT layer).
+router.get("/agent/:bridge_id/usage", middleware, validate(analyticsValidation.getAgentUsage), analyticsController.getAgentUsage);
+
 // Embed (folder) analytics: user-wise + agent-wise for agents in the embed folder.
 router.get("/embed/:folder_id", middleware, validate(analyticsValidation.getEmbedAnalytics), analyticsController.getEmbedAnalytics);
 

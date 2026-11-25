@@ -143,6 +143,66 @@ async function getCostOverTime({ bridge_id, org_id, start, end, bucket, filters 
   return pgSelect(query, finalParams);
 }
 
+// ---- Usage grouped by a variable / model / day (returned in the response, no RT layer) ----
+
+const USAGE_COLUMNS = { model: "model", day: "to_char(date_trunc('day', created_at), 'YYYY-MM-DD')" };
+
+// getSummary's numbers for one agent and window: one row per group when `group_by` is given
+// (variables.<name>, model or day), otherwise one row of totals.
+// variables_eq / variables_ne compare a variable's value exactly; "not equal" keeps rows without it.
+// Names and values travel as bind params; the validator limits group_by and sort to known words.
+async function getUsageRows({ bridge_id, org_id, start, end, filters, group_by = [], variables_eq = {}, variables_ne = {}, sort, limit }) {
+  const params = { bridge_id, org_id, start, end, limit };
+  const groups = group_by.map((key, i) => {
+    if (USAGE_COLUMNS[key]) return USAGE_COLUMNS[key];
+    params[`gk${i}`] = key.replace("variables.", "");
+    return `variables->>:gk${i}`;
+  });
+  const where = [];
+  Object.entries(variables_eq).forEach(([key, value], i) => {
+    Object.assign(params, { [`ek${i}`]: key, [`ev${i}`]: value });
+    where.push(`AND variables->>:ek${i} = :ev${i}`);
+  });
+  Object.entries(variables_ne).forEach(([key, value], i) => {
+    Object.assign(params, { [`nk${i}`]: key, [`nv${i}`]: value });
+    where.push(`AND COALESCE(variables->>:nk${i}, '') <> :nv${i}`);
+  });
+  const order = sort === "day" ? `g${group_by.indexOf("day")}` : sort;
+  const query = `
+    SELECT ${groups.map((expr, i) => `${expr} AS g${i},`).join(" ")}
+      COUNT(*)::int AS total_requests,
+      COUNT(*) FILTER (WHERE status = false)::int AS failed_runs,
+      COALESCE(SUM(
+        COALESCE((tokens->>'total_tokens')::float,
+                 COALESCE((tokens->>'input_tokens')::float, 0) + COALESCE((tokens->>'output_tokens')::float, 0))
+      ), 0) AS total_tokens,
+      COALESCE(SUM((tokens->>'expected_cost')::float), 0) AS est_cost,
+      COALESCE(SUM((tokens->>'credits')::float), 0) AS credits
+    FROM conversation_logs
+    WHERE bridge_id = :bridge_id AND org_id = :org_id
+      AND created_at BETWEEN :start AND :end ${filterClause(filters)} ${where.join(" ")}
+    ${groups.length ? `GROUP BY ${groups.map((_, i) => i + 1).join(", ")} ORDER BY ${order} DESC LIMIT :limit` : ""}`;
+  return pgSelect(query, params);
+}
+
+// Totals for the window plus one row per group. A group whose key is null holds the messages that
+// have no value for it, so the groups add up to the summary whenever `truncated` is false.
+async function getUsage(args) {
+  const [[totals], rows] = await Promise.all([getUsageRows({ ...args, group_by: [] }), getUsageRows(args)]);
+  const numbers = (row = {}) => ({
+    total_requests: row.total_requests || 0,
+    failed_runs: row.failed_runs || 0,
+    total_tokens: Math.round(row.total_tokens || 0),
+    est_cost: Number(Number(row.est_cost || 0).toFixed(6)),
+    credits: Number(Number(row.credits || 0).toFixed(4))
+  });
+  return {
+    summary: numbers(totals),
+    groups: rows.map((row) => ({ ...Object.fromEntries(args.group_by.map((key, i) => [key, row[`g${i}`] ?? null])), ...numbers(row) })),
+    truncated: rows.length >= args.limit
+  };
+}
+
 async function pushAnalytics(channel, data) {
   await responseSender.sendResponse({
     rtlLayer: true,
@@ -305,5 +365,6 @@ async function getFilterOptions({ bridge_id, org_id }) {
 export default {
   computeWindow,
   runAndPush,
-  getFilterOptions
+  getFilterOptions,
+  getUsage
 };
